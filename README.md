@@ -1,59 +1,124 @@
-# `audit_log`
+# 🔍 ICP Audit Log
 
-Welcome to your new `audit_log` project and to the Internet Computer development community. By default, creating a new project adds this README and some template files to your project directory. You can edit these template files to customize your project and to include your own code to speed up the development cycle.
+**Immutable, verifiable audit trail on the Internet Computer — powered by Motoko**
 
-To get started, you might want to explore the project directory structure and the default configuration file. Working with this project in your development environment will not affect any production deployment or identity tokens.
+A tamper-proof append-only audit log canister that records every tool call, agent action, and user interaction from Hermes Agent. Self-hosts its own dashboard. Data is hashed and stored on-chain with full verifiability.
 
-To learn more before you start working with `audit_log`, see the following documentation available online:
+## Features
 
-- [Quick Start](https://internetcomputer.org/docs/current/developer-docs/setup/deploy-locally)
-- [SDK Developer Tools](https://internetcomputer.org/docs/current/developer-docs/setup/install)
-- [Motoko Programming Language Guide](https://internetcomputer.org/docs/current/motoko/main/motoko)
-- [Motoko Language Quick Reference](https://internetcomputer.org/docs/current/motoko/main/language-manual)
+- **Append-only immutable log** — entries can never be modified or deleted
+- **On-chain hash chain** — every entry has a SHA-256 content hash for verifiability
+- **Self-hosted dashboard** — HTML/CSS/JS dashboard served directly from the canister
+- **Paginated API** — `/api/entries?page=N`, `/api/stats`
+- **Batch upload** — `log_batch` for efficient bulk inserts
+- **Query by agent/type** — `get_entries_by_agent`, `get_entries_by_type`
+- **Hash chain verification** — `get_hash_chain` + `verify_entry`
 
-If you want to start working on your project right away, you might want to try the following commands:
+## Tech Stack
 
-```bash
-cd audit_log/
-dfx help
-dfx canister --help
+| Layer | Technology |
+|-------|-----------|
+| **Blockchain** | Internet Computer (ICP) |
+| **Backend** | Motoko (persistent actor) |
+| **Dashboard** | Vanilla HTML/CSS/JS (served from canister) |
+| **Bridge** | Python 3 — reads Hermes state.db, uploads via `dfx` |
+| **Identity** | Plaintext `.pem` (nebulock-prod) |
+
+## Architecture
+
+```
+┌─────────────────────────────────────┐
+│  Hermes Agent (state.db)            │
+│  ┌───────────────────────────────┐  │
+│  │  messages table (SQLite)      │  │
+│  │  tool calls, responses, etc.  │  │
+│  └──────────────┬────────────────┘  │
+└─────────────────┼───────────────────┘
+                  │
+          audit_bridge.py
+          (reads new rows → dfx call log_batch)
+                  │
+                  ▼
+┌─────────────────────────────────────┐
+│  ICP Canister (s7oui-qqaaa-...)     │
+│  ┌───────────────────────────────┐  │
+│  │  AuditLog (persistent actor)  │  │
+│  │  • entries: [LogEntry]        │  │
+│  │  • log_action / log_batch     │  │
+│  │  • get_all / get_recent       │  │
+│  │  • http_request → dashboard   │  │
+│  └───────────────────────────────┘  │
+└─────────────────────────────────────┘
+                  │
+                  ▼
+      https://s7oui-qqaaa-aaaag-ayx2a-cai.raw.icp0.io/
+      (self-hosted dashboard with pagination)
 ```
 
-## Running the project locally
+## Canister
 
-If you want to test your project locally, you can use the following commands:
+- **ID:** `s7oui-qqaaa-aaaag-ayx2a-cai`
+- **Network:** IC mainnet
+- **Candid:** `src/audit_log_backend/main.mo`
+- **Dashboard:** served via `http_request` on `/`, `/dashboard`, `/app`
+
+### API Endpoints
+
+| Path | Method | Description |
+|------|--------|-------------|
+| `/api/entries?page=N` | GET | Paginated entries (200 per page) |
+| `/api/stats` | GET | Total count, unique agents, unique types |
+| `/`, `/dashboard`, `/app` | GET | Self-hosted HTML dashboard |
+
+### Canister Methods
+
+| Method | Type | Description |
+|--------|------|-------------|
+| `log_action(agent_id, action_type, hash, metadata)` | Update | Append single entry |
+| `log_batch(vec { records })` | Update | Batch append |
+| `get_entry(index)` | Query | Get single entry by index |
+| `get_all_entries()` | Query | Get all entries |
+| `get_recent_entries(limit)` | Query | Get N most recent |
+| `get_entries_by_agent(id)` | Query | Filter by agent |
+| `get_entries_by_type(type)` | Query | Filter by type |
+| `get_total_count()` | Query | Total entries |
+| `get_hash_chain()` | Query | All hashes for verification |
+| `verify_entry(index, hash)` | Query | Verify a specific entry |
+
+## Bridge Scripts
+
+Located in `bridge/`:
+
+| Script | Purpose |
+|--------|---------|
+| `audit_bridge.py` | Main bridge: reads Hermes state.db, uploads new entries every 5 min |
+| `upload_400.py` | One-shot: upload last 400 entries from state.db |
+| `bulk_upload.py` | Bulk upload from state.db |
+| `api_server.py` | Simple HTTP server for dashboard.html |
+| `run_bridge_mainnet.sh` | Production loop (`while true; python3 audit_bridge.py --once; sleep 300`) |
+| `run_bridge_loop.sh` | Loop runner |
+
+## Deploy
 
 ```bash
-# Starts the replica, running in the background
-dfx start --background
+# Build
+dfx build --network ic
 
-# Deploys your canisters to the replica and generates your candid interface
-dfx deploy
+# Deploy (upgrade, preserves data)
+dfx deploy --network ic
+
+# Reinstall (WIPES ALL DATA)
+echo "yes" | dfx canister install --mode reinstall --network ic audit_log_backend
 ```
 
-Once the job completes, your application will be available at `http://localhost:4943?canisterId={asset_canister_id}`.
+## Dashboard
 
-If you have made changes to your backend canister, you can generate a new candid interface with
+The dashboard (`dashboard/dashboard.html`) is embedded directly in the Motoko canister as `DASHBOARD_HTML`. To update:
 
-```bash
-npm run generate
-```
+1. Edit `dashboard/dashboard.html`
+2. Minify and embed into `main.mo` replacing the `DASHBOARD_HTML` variable
+3. `dfx deploy --network ic`
 
-at any time. This is recommended before starting the frontend development server, and will be run automatically any time you run `dfx deploy`.
+## License
 
-If you are making frontend changes, you can start a development server with
-
-```bash
-npm start
-```
-
-Which will start a server at `http://localhost:8080`, proxying API requests to the replica at port 4943.
-
-### Note on frontend environment variables
-
-If you are hosting frontend code somewhere without using DFX, you may need to make one of the following adjustments to ensure your project does not fetch the root key in production:
-
-- set`DFX_NETWORK` to `ic` if you are using Webpack
-- use your own preferred method to replace `process.env.DFX_NETWORK` in the autogenerated declarations
-  - Setting `canisters -> {asset_canister_id} -> declarations -> env_override to a string` in `dfx.json` will replace `process.env.DFX_NETWORK` with the string in the autogenerated declarations
-- Write your own `createActor` constructor
+MIT
