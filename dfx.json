@@ -3,6 +3,10 @@
     "audit_log_backend": {
       "main": "src/audit_log_backend/main.mo",
       "type": "motoko"
+    },
+    "audit_log_v4": {
+      "main": "src/audit_log_backend/main.mo",
+      "type": "motoko"
     }
   },
   "defaults": {
